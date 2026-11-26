@@ -134,6 +134,7 @@
   <string name="stats_balance_title">帳戶餘額</string>
   <string name="stats_balance_refresh_hint">點按重新整理</string>
   <string name="stats_balance_refreshing">重新整理中…</string>
+  <string name="stats_balance_failed">取得失敗</string>
   <string name="stats_session_cost">本次會話花費</string>
   <string name="stats_token_usage">Token 用量</string>
   <string name="stats_cache_hit">快取命中</string>
