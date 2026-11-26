@@ -13,7 +13,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
-import io.github.mangi.eta.ui.model.ChatBalanceUi
 import io.github.mangi.eta.ui.model.formatContextUsage
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -32,9 +31,6 @@ internal fun AgentContextUsageButton(
     usage: AgentContextUsageUi,
     onCompact: () -> Unit = {},
     canCompact: Boolean = false,
-    balance: ChatBalanceUi? = null,
-    balanceRefreshing: Boolean = false,
-    onRefreshBalance: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val progress = usage.progress
@@ -97,9 +93,6 @@ internal fun AgentContextUsageButton(
             usage = usage,
             summaryText = summary,
             detailText = detail,
-            balance = balance,
-            balanceRefreshing = balanceRefreshing,
-            onRefreshBalance = onRefreshBalance,
             canCompact = canCompact,
             onCompact = onCompact,
             onDismissRequest = { showPopover = false },
