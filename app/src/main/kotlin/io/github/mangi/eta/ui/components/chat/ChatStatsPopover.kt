@@ -12,11 +12,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +30,7 @@ import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -50,6 +54,7 @@ import androidx.compose.ui.window.PopupProperties
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AppStrings
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
+import io.github.mangi.eta.ui.model.ChatBalanceUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
 import java.text.NumberFormat
 import java.util.Locale
@@ -225,6 +230,9 @@ internal fun ContextUsageStatsPopoverPopup(
     usage: AgentContextUsageUi,
     summaryText: String,
     detailText: String,
+    balance: ChatBalanceUi? = null,
+    balanceRefreshing: Boolean = false,
+    onRefreshBalance: (() -> Unit)? = null,
     canCompact: Boolean,
     onCompact: () -> Unit,
     onDismissRequest: () -> Unit,
@@ -245,7 +253,44 @@ internal fun ContextUsageStatsPopoverPopup(
         null
     }
 
+    val refreshInteractionSource = remember { MutableInteractionSource() }
+    val sessionCostText = balance?.sessionCostText?.takeIf(String::isNotBlank)
+    val balanceText = balance?.availableText?.takeIf(String::isNotBlank)
+    val balanceHint = when {
+        balanceText == null -> null
+        balanceRefreshing -> stringResource(R.string.stats_balance_refreshing)
+        onRefreshBalance != null -> stringResource(R.string.stats_balance_refresh_hint)
+        else -> null
+    }
+    val balanceClick: (() -> Unit)? = if (balanceText != null && !balanceRefreshing) {
+        onRefreshBalance
+    } else {
+        null
+    }
+
     val body: @Composable ColumnScope.() -> Unit = {
+        // 账户余额：单行占位，右侧小字提示整块可点；不接数据时整块不渲染。
+        if (balanceText != null) {
+            val balanceRowModifier: Modifier = if (balanceClick != null) {
+                Modifier.clickable(
+                    interactionSource = refreshInteractionSource,
+                    indication = null,
+                    role = Role.Button,
+                    onClick = balanceClick,
+                )
+            } else {
+                Modifier
+            }
+            Box(modifier = Modifier.fillMaxWidth().then(balanceRowModifier)) {
+                StatsSectionHeader(
+                    icon = ChatActionIcons.Wallet,
+                    title = stringResource(R.string.stats_balance_title),
+                    value = balanceText,
+                    hint = balanceHint,
+                )
+            }
+            StatsSectionDivider()
+        }
         StatsSectionHeader(
             icon = ChatActionIcons.Database,
             title = stringResource(if (stats.hasTokenUsage) R.string.stats_token_usage else R.string.ui_contextual_usage_d12810),
@@ -253,6 +298,13 @@ internal fun ContextUsageStatsPopoverPopup(
         )
         StatsSectionDivider()
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // 本会话花费与 Token 明细同块：钱跟 token 放在一起，只占一行。
+            if (sessionCostText != null) {
+                StatsDetailRow(
+                    label = stringResource(R.string.stats_session_cost),
+                    value = sessionCostText,
+                )
+            }
             if (usage.contextTokens != null && usage.contextWindow != null && usage.contextWindow > 0) {
                 StatsDetailRow(
                     label = stringResource(R.string.ui_contextual_usage_d12810),
@@ -418,6 +470,19 @@ internal fun ContextUsageStatsPopoverPopup(
             )
         }
     }
+    // 加了余额块之后内容会变高：给卡片内容加一层限高滚动，避免小屏/分屏下把底部按钮顶出屏幕。
+    val statsScrollState = rememberScrollState()
+    val maxBodyHeight = (LocalConfiguration.current.screenHeightDp - 180).coerceAtLeast(260).dp
+    val scrollableBody: @Composable ColumnScope.() -> Unit = {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxBodyHeight)
+                .verticalScroll(statsScrollState),
+        ) {
+            body()
+        }
+    }
     val overlayBackdrop = currentGlassOverlayBackdrop()
     if (anchor != null && anchorContent != null && overlayBackdrop != null) {
         TopLayer {
@@ -430,11 +495,11 @@ internal fun ContextUsageStatsPopoverPopup(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
                 anchorContent = anchorContent,
-                content = body,
+                content = scrollableBody,
             )
         }
     } else if (show) {
-        ChatStatsPopoverPopup(onDismissRequest = onDismissRequest, content = body)
+        ChatStatsPopoverPopup(onDismissRequest = onDismissRequest, content = scrollableBody)
     }
 }
 
@@ -479,6 +544,7 @@ private fun StatsSectionHeader(
     icon: ImageVector,
     title: String,
     value: String?,
+    hint: String? = null,
 ) {
     val primaryColor = MiuixTheme.colorScheme.onSurface
     Row(
@@ -509,19 +575,35 @@ private fun StatsSectionHeader(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (!value.isNullOrBlank()) {
-            Spacer(Modifier.width(16.dp))
-            Text(
-                text = value,
-                style = MiuixTheme.textStyles.footnote1.copy(
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
-                    fontWeight = FontWeight.Medium,
-                    fontFeatureSettings = "tnum",
-                ),
-                color = primaryColor,
-                maxLines = 1,
-            )
+        if (!value.isNullOrBlank() || !hint.isNullOrBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (!value.isNullOrBlank()) {
+                    Spacer(Modifier.width(16.dp))
+                    Text(
+                        text = value,
+                        style = MiuixTheme.textStyles.footnote1.copy(
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            fontWeight = FontWeight.Medium,
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = primaryColor,
+                        maxLines = 1,
+                    )
+                }
+                if (!hint.isNullOrBlank()) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = hint,
+                        style = MiuixTheme.textStyles.footnote1.copy(
+                            fontSize = 10.sp,
+                            lineHeight = 14.sp,
+                        ),
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.72f),
+                        maxLines = 1,
+                    )
+                }
+            }
         }
     }
 }
@@ -571,6 +653,7 @@ private fun StatsDetailRow(
             color = valueColor,
             textAlign = TextAlign.End,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
