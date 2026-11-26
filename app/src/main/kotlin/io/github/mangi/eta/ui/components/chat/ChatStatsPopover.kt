@@ -257,10 +257,11 @@ internal fun ContextUsageStatsPopoverPopup(
         null
     }
 
-    val balancePanel = rememberBalancePanel(usage)
     val balanceInteraction = remember { MutableInteractionSource() }
 
     val body: @Composable ColumnScope.() -> Unit = {
+        // 取数放在弹层内容内部：弹层未组合时不订阅 Flow，避免输入栏层被反复重组。
+        val balancePanel = rememberBalancePanel(usage)
         // 账户余额：单行占位，右侧小字「点按刷新」；拿不到余额接口时整块不渲染。
         if (balancePanel.balanceText != null) {
             val refreshBalance = balancePanel.onRefresh
@@ -543,11 +544,16 @@ private data class BalancePanelUi(
 private fun rememberBalancePanel(usage: AgentContextUsageUi): BalancePanelUi {
     val context = LocalContext.current
     val initialProviders = remember { ProviderRepository.cachedProviders() }
-    val providers by ProviderRepository.providersFlow()
+    // Flow 必须按实例固定：这三条底层都会新建 Flow，若在重组里现取现订阅，
+    // 每次重组都会取消并重建 Room / DataStore 订阅，进而触发新一轮重组。
+    val providersFlow = remember { ProviderRepository.providersFlow() }
+    val selectedProviderFlow = remember { RuntimeConfigRepository.selectedProviderIdFlow() }
+    val selectedModelFlow = remember { RuntimeConfigRepository.selectedModelIdFlow() }
+    val providers by providersFlow
         .collectAsStateWithLifecycle(initialValue = initialProviders)
-    val selectedProviderId by RuntimeConfigRepository.selectedProviderIdFlow()
+    val selectedProviderId by selectedProviderFlow
         .collectAsStateWithLifecycle(initialValue = RuntimeConfigRepository.cachedSelectedProviderId())
-    val selectedModelId by RuntimeConfigRepository.selectedModelIdFlow()
+    val selectedModelId by selectedModelFlow
         .collectAsStateWithLifecycle(initialValue = RuntimeConfigRepository.cachedSelectedModelId())
     val provider = remember(providers, selectedProviderId) {
         providers.firstOrNull { it.id == selectedProviderId }
