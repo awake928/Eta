@@ -131,6 +131,10 @@
   <string name="stats_tool_time">工具调用用时</string>
   <string name="stats_avg_ttft">首 token 平均（TTFT）</string>
   <string name="stats_output_speed">输出速度（TPS）</string>
+  <string name="stats_balance_title">账户余额</string>
+  <string name="stats_balance_refresh_hint">点按刷新</string>
+  <string name="stats_balance_refreshing">刷新中…</string>
+  <string name="stats_session_cost">本会话花费</string>
   <string name="stats_token_usage">Token 用量</string>
   <string name="stats_cache_hit">缓存命中</string>
   <string name="stats_cache_miss">未命中</string>
