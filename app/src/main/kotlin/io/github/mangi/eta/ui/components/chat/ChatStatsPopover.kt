@@ -17,12 +17,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -51,15 +54,23 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AppStrings
+import io.github.mangi.eta.data.model.ProviderSourceTypes
+import io.github.mangi.eta.data.provider.ProviderSourceRegistry
+import io.github.mangi.eta.data.repository.DeepSeekBalanceRepository
+import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.data.repository.catalog.ModelPricing
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
-import io.github.mangi.eta.ui.model.ChatBalanceUi
+import io.github.mangi.eta.ui.model.SessionStatsSummaryUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
 import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
@@ -230,9 +241,6 @@ internal fun ContextUsageStatsPopoverPopup(
     usage: AgentContextUsageUi,
     summaryText: String,
     detailText: String,
-    balance: ChatBalanceUi? = null,
-    balanceRefreshing: Boolean = false,
-    onRefreshBalance: (() -> Unit)? = null,
     canCompact: Boolean,
     onCompact: () -> Unit,
     onDismissRequest: () -> Unit,
@@ -253,40 +261,29 @@ internal fun ContextUsageStatsPopoverPopup(
         null
     }
 
-    val refreshInteractionSource = remember { MutableInteractionSource() }
-    val sessionCostText = balance?.sessionCostText?.takeIf(String::isNotBlank)
-    val balanceText = balance?.availableText?.takeIf(String::isNotBlank)
-    val balanceHint = when {
-        balanceText == null -> null
-        balanceRefreshing -> stringResource(R.string.stats_balance_refreshing)
-        onRefreshBalance != null -> stringResource(R.string.stats_balance_refresh_hint)
-        else -> null
-    }
-    val balanceClick: (() -> Unit)? = if (balanceText != null && !balanceRefreshing) {
-        onRefreshBalance
-    } else {
-        null
-    }
+    val balancePanel = rememberBalancePanel(usage)
+    val balanceInteraction = remember { MutableInteractionSource() }
 
     val body: @Composable ColumnScope.() -> Unit = {
-        // 账户余额：单行占位，右侧小字提示整块可点；不接数据时整块不渲染。
-        if (balanceText != null) {
-            val balanceRowModifier: Modifier = if (balanceClick != null) {
+        // 账户余额：单行占位，右侧小字「点按刷新」；拿不到余额接口时整块不渲染。
+        if (balancePanel.balanceText != null) {
+            val refreshBalance = balancePanel.onRefresh
+            val balanceModifier: Modifier = if (refreshBalance != null) {
                 Modifier.clickable(
-                    interactionSource = refreshInteractionSource,
+                    interactionSource = balanceInteraction,
                     indication = null,
                     role = Role.Button,
-                    onClick = balanceClick,
+                    onClick = refreshBalance,
                 )
             } else {
                 Modifier
             }
-            Box(modifier = Modifier.fillMaxWidth().then(balanceRowModifier)) {
+            Box(modifier = Modifier.fillMaxWidth().then(balanceModifier)) {
                 StatsSectionHeader(
                     icon = ChatActionIcons.Wallet,
                     title = stringResource(R.string.stats_balance_title),
-                    value = balanceText,
-                    hint = balanceHint,
+                    value = balancePanel.balanceText,
+                    hint = balancePanel.balanceHint,
                 )
             }
             StatsSectionDivider()
@@ -298,11 +295,11 @@ internal fun ContextUsageStatsPopoverPopup(
         )
         StatsSectionDivider()
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            // 本会话花费与 Token 明细同块：钱跟 token 放在一起，只占一行。
-            if (sessionCostText != null) {
+            // 本会话花费与 Token 明细同块：钱跟 token 放一起，只占一行。
+            if (balancePanel.costText != null) {
                 StatsDetailRow(
                     label = stringResource(R.string.stats_session_cost),
-                    value = sessionCostText,
+                    value = balancePanel.costText,
                 )
             }
             if (usage.contextTokens != null && usage.contextWindow != null && usage.contextWindow > 0) {
@@ -536,6 +533,130 @@ internal fun ChatStatsPopoverPopup(
             modifier = cardModifier.padding(horizontal = 16.dp, vertical = 14.dp),
             content = content,
         )
+    }
+}
+
+/** 余额币种是人民币时，把 models.dev 的美元价目按固定汇率折成人民币，仅作花费估算。 */
+private const val UsdToCnyEstimateRate = 7.2
+private const val CnyCurrencyCode = "CNY"
+private const val BuiltinModelIdPrefix = "builtin-"
+private const val DeepSeekModelIdPrefix = "deepseek"
+
+/** 统计面板顶部账户区块的展示态：余额与花费都是可选行，取不到就不渲染。 */
+private data class BalancePanelUi(
+    val balanceText: String? = null,
+    val balanceHint: String? = null,
+    val costText: String? = null,
+    val onRefresh: (() -> Unit)? = null,
+)
+
+/**
+ * 解析当前 provider 与模型，产出「账户余额 + 本会话花费」的展示态。
+ *
+ * 余额只在 DeepSeek 官方源（或跑 DeepSeek 模型的中转站）上出现；
+ * 花费按 APK 内置 models.dev 目录价目估算；两者都拿不到时整个区块不渲染。
+ */
+@Composable
+private fun rememberBalancePanel(usage: AgentContextUsageUi): BalancePanelUi {
+    val context = LocalContext.current
+    val initialProviders = remember { ProviderRepository.cachedProviders() }
+    val providers by ProviderRepository.providersFlow()
+        .collectAsStateWithLifecycle(initialValue = initialProviders)
+    val selectedProviderId by RuntimeConfigRepository.selectedProviderIdFlow()
+        .collectAsStateWithLifecycle(initialValue = RuntimeConfigRepository.cachedSelectedProviderId())
+    val selectedModelId by RuntimeConfigRepository.selectedModelIdFlow()
+        .collectAsStateWithLifecycle(initialValue = RuntimeConfigRepository.cachedSelectedModelId())
+    val provider = remember(providers, selectedProviderId) {
+        providers.firstOrNull { it.id == selectedProviderId }
+            ?: initialProviders.firstOrNull { it.id == selectedProviderId }
+    }
+    val providerSourceType = remember(provider) {
+        provider?.let { current -> ProviderSourceRegistry.resolve(current) }.orEmpty()
+    }
+    // usage 里只有 contextWindow，拿不到模型 id，所以这里单独读选中的模型。
+    val modelKey = selectedModelId.orEmpty().trim().removePrefix(BuiltinModelIdPrefix)
+    val isDeepSeekSource = providerSourceType == ProviderSourceTypes.DEEPSEEK
+    val isDeepSeekModel = modelKey.startsWith(DeepSeekModelIdPrefix)
+    val showBalance = isDeepSeekSource && provider != null && provider.apiKey.isNotBlank()
+
+    var balance by remember(provider?.id) {
+        mutableStateOf<DeepSeekBalanceRepository.BalanceState>(DeepSeekBalanceRepository.BalanceState.Idle)
+    }
+    var cost by remember(provider?.id, modelKey) { mutableStateOf<ModelPricing.ModelCost?>(null) }
+    val scope = rememberCoroutineScope()
+    val refreshing = balance is DeepSeekBalanceRepository.BalanceState.Loading
+
+    LaunchedEffect(provider?.id, showBalance) {
+        val current = provider
+        if (current == null || !showBalance) {
+            balance = DeepSeekBalanceRepository.BalanceState.Idle
+            return@LaunchedEffect
+        }
+        // 60 秒内命中存储层缓存，不会重复请求。
+        balance = DeepSeekBalanceRepository.BalanceState.Loading
+        balance = DeepSeekBalanceRepository.fetch(current, force = false)
+    }
+    LaunchedEffect(provider?.id, providerSourceType, modelKey) {
+        cost = if (modelKey.isEmpty()) null else ModelPricing.costFor(context, providerSourceType, modelKey)
+    }
+
+    if (!isDeepSeekSource && !isDeepSeekModel) return BalancePanelUi()
+
+    val currency = (balance as? DeepSeekBalanceRepository.BalanceState.Loaded)?.currency
+    val costText = cost?.let { modelCost ->
+        val usd = sessionCostUsd(modelCost, usage.sessionStats)
+        formatMoney(if (currency == CnyCurrencyCode) usd * UsdToCnyEstimateRate else usd, currency)
+    }
+    if (!showBalance && costText == null) return BalancePanelUi()
+
+    val balanceText = when (val state = balance) {
+        DeepSeekBalanceRepository.BalanceState.Idle -> null
+        DeepSeekBalanceRepository.BalanceState.Loading -> "…"
+        is DeepSeekBalanceRepository.BalanceState.Loaded -> formatMoney(state.total, state.currency)
+        DeepSeekBalanceRepository.BalanceState.Failed -> stringResource(R.string.stats_balance_failed)
+    }
+    val hint = when {
+        balanceText == null -> null
+        refreshing -> stringResource(R.string.stats_balance_refreshing)
+        showBalance -> stringResource(R.string.stats_balance_refresh_hint)
+        else -> null
+    }
+    val refreshTarget = provider
+    val onRefresh: (() -> Unit)? = if (refreshTarget != null && showBalance && !refreshing) {
+        {
+            scope.launch {
+                balance = DeepSeekBalanceRepository.BalanceState.Loading
+                balance = DeepSeekBalanceRepository.fetch(refreshTarget, force = true)
+            }
+        }
+    } else {
+        null
+    }
+    return BalancePanelUi(
+        balanceText = balanceText,
+        balanceHint = hint,
+        costText = costText,
+        onRefresh = onRefresh,
+    )
+}
+
+/** 按 models.dev 的美元价目估算本会话花费；reasoning 已含在 outputTokens 内，不重复计费。 */
+private fun sessionCostUsd(cost: ModelPricing.ModelCost, stats: SessionStatsSummaryUi): Double {
+    val cacheWritePrice = cost.cacheWrite ?: cost.input
+    val totalUsd = stats.uncachedInputTokens * cost.input +
+        stats.cachedTokens * cost.cacheRead +
+        stats.cacheWriteTokens * cacheWritePrice +
+        stats.outputTokens * cost.output
+    return totalUsd / 1_000_000.0
+}
+
+/** 金额展示：CNY 用 ¥，其余按 $ 处理；不足 0.01 用 `<0.01` 形式，否则两位小数。 */
+private fun formatMoney(amount: Double, currency: String?): String {
+    val symbol = if (currency == CnyCurrencyCode) "\u00A5" else "\$"
+    return if (amount < 0.01) {
+        "<" + symbol + "0.01"
+    } else {
+        symbol + String.format(Locale.US, "%.2f", amount)
     }
 }
 
