@@ -300,6 +300,45 @@ internal object ChatActionIcons {
         }
     }
 
+    val Wallet: ImageVector by lazy {
+        icon("ChatWallet") {
+            // 钱包主体：圆角矩形轮廓
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = STROKE,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(1.9f, 6.1f)
+                quadTo(1.9f, 3.7f, 4.3f, 3.7f)
+                horizontalLineTo(11.7f)
+                quadTo(14.1f, 3.7f, 14.1f, 6.1f)
+                verticalLineTo(9.9f)
+                quadTo(14.1f, 12.3f, 11.7f, 12.3f)
+                horizontalLineTo(4.3f)
+                quadTo(1.9f, 12.3f, 1.9f, 9.9f)
+                close()
+            }
+            // 钱包盖缝线
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = STROKE,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(1.9f, 8.0f)
+                horizontalLineTo(6.4f)
+            }
+            // 右侧扣钮
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(10.9f, 8.0f)
+                arcTo(1.3f, 1.3f, 0f, isMoreThanHalf = true, isPositiveArc = true, 8.3f, 8.0f)
+                arcTo(1.3f, 1.3f, 0f, isMoreThanHalf = true, isPositiveArc = true, 10.9f, 8.0f)
+                close()
+            }
+        }
+    }
+
     private inline fun icon(
         name: String,
         block: ImageVector.Builder.() -> Unit,
