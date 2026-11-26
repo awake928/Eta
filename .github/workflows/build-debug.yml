@@ -7,14 +7,9 @@ on:
         description: "版本名附加标记（留空则不带）"
         required: false
         default: ""
-      publish_release:
-        description: "把 APK 挂到 release（提供免登录直链）"
-        type: boolean
-        required: false
-        default: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: custom-debug-${{ github.ref }}
@@ -54,12 +49,10 @@ jobs:
             echo "::error::Debug APK 数量异常（${#apks[@]}）。"
             exit 1
           fi
-          out="$RUNNER_TEMP/Eta-custom-debug.apk"
-          cp "${apks[0]}" "$out"
-          ls -lh "$out"
-          echo "path=$out" >> "$GITHUB_OUTPUT"
+          echo "path=${apks[0]}" >> "$GITHUB_OUTPUT"
+          ls -lh "${apks[0]}"
 
-      - name: 上传构建产物
+      - name: 上传 APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: eta-debug-apk
@@ -67,18 +60,3 @@ jobs:
           archive: false
           if-no-files-found: error
           retention-days: 14
-
-      - name: 发布到 Release（免登录直链）
-        if: ${{ inputs.publish_release }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APK_PATH: ${{ steps.apk.outputs.path }}
-          RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          tag="custom-debug"
-          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-                 --title "自建 Debug 构建" \
-                 --notes "由自建 workflow 产出的 Debug APK（debug 签名，未混淆，体积大于官方 release 包）。"
-          gh release upload "$tag" "$APK_PATH" --repo "$GITHUB_REPOSITORY" --clobber
-          echo "直链: https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/Eta-custom-debug.apk"
