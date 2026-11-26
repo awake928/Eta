@@ -12,14 +12,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
@@ -32,7 +29,6 @@ import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
@@ -467,19 +463,6 @@ internal fun ContextUsageStatsPopoverPopup(
             )
         }
     }
-    // 加了余额块之后内容会变高：给卡片内容加一层限高滚动，避免小屏/分屏下把底部按钮顶出屏幕。
-    val statsScrollState = rememberScrollState()
-    val maxBodyHeight = (LocalConfiguration.current.screenHeightDp - 180).coerceAtLeast(260).dp
-    val scrollableBody: @Composable ColumnScope.() -> Unit = {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = maxBodyHeight)
-                .verticalScroll(statsScrollState),
-        ) {
-            body()
-        }
-    }
     val overlayBackdrop = currentGlassOverlayBackdrop()
     if (anchor != null && anchorContent != null && overlayBackdrop != null) {
         TopLayer {
@@ -492,11 +475,11 @@ internal fun ContextUsageStatsPopoverPopup(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
                 anchorContent = anchorContent,
-                content = scrollableBody,
+                content = body,
             )
         }
     } else if (show) {
-        ChatStatsPopoverPopup(onDismissRequest = onDismissRequest, content = scrollableBody)
+        ChatStatsPopoverPopup(onDismissRequest = onDismissRequest, content = body)
     }
 }
 
