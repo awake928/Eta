@@ -1,4 +1,4 @@
-name: 自建 Debug APK
+name: 自建 APK（Debug + Release）
 
 on:
   workflow_dispatch:
@@ -7,12 +7,17 @@ on:
         description: "版本名附加标记（留空则不带）"
         required: false
         default: ""
+      publish_release:
+        description: "把 APK 挂到 release（提供免登录直链）"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: custom-debug-${{ github.ref }}
+  group: custom-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -49,10 +54,12 @@ jobs:
             echo "::error::Debug APK 数量异常（${#apks[@]}）。"
             exit 1
           fi
-          echo "path=${apks[0]}" >> "$GITHUB_OUTPUT"
-          ls -lh "${apks[0]}"
+          out="$RUNNER_TEMP/Eta-custom-debug.apk"
+          cp "${apks[0]}" "$out"
+          ls -lh "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
 
-      - name: 上传 APK
+      - name: 上传构建产物
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: eta-debug-apk
@@ -60,3 +67,87 @@ jobs:
           archive: false
           if-no-files-found: error
           retention-days: 14
+
+      - name: 发布到 Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_PATH: ${{ steps.apk.outputs.path }}
+        run: |
+          tag="custom-debug"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --title "自建 Debug 构建" \
+                 --notes "debug 签名、未混淆。安装前需卸载官方 Eta。"
+          gh release upload "$tag" "$APK_PATH" --repo "$GITHUB_REPOSITORY" --clobber
+
+  build-release:
+    name: 构建 Release APK（自签名 + R8）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: 配置构建环境
+        uses: ./.github/actions/setup-build
+
+      - name: 生成临时自签名证书
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/eta-custom.jks" \
+            -alias eta \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass eta-custom-pass -keypass eta-custom-pass \
+            -dname "CN=Eta Custom, OU=Self, O=Self, L=NA, ST=NA, C=CN"
+          ls -lh "$RUNNER_TEMP/eta-custom.jks"
+
+      - name: 构建 Release
+        env:
+          ETA_RELEASE_STORE_FILE: ${{ runner.temp }}/eta-custom.jks
+          ETA_RELEASE_STORE_PASSWORD: eta-custom-pass
+          ETA_RELEASE_KEY_ALIAS: eta
+          ETA_RELEASE_KEY_PASSWORD: eta-custom-pass
+        run: |
+          ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease
+
+      - name: 校验并整理 APK
+        id: apk
+        run: |
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/release/*.apk)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "::error::Release APK 数量异常（${#apks[@]}）。"
+            exit 1
+          fi
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          "$apksigner_path" verify --print-certs "${apks[0]}" | head -5
+          out="$RUNNER_TEMP/Eta-custom-release.apk"
+          cp "${apks[0]}" "$out"
+          ls -lh "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: eta-release-apk
+          path: ${{ steps.apk.outputs.path }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 发布到 Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_PATH: ${{ steps.apk.outputs.path }}
+        run: |
+          tag="custom-release"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --title "自建 Release 构建（R8 瘦身 + 自签名）" \
+                 --notes "R8 混淆 + 资源裁剪，体积接近官方 release。自签名，安装前需卸载官方 Eta。"
+          gh release upload "$tag" "$APK_PATH" --repo "$GITHUB_REPOSITORY" --clobber
