@@ -95,15 +95,17 @@ jobs:
       - name: 配置构建环境
         uses: ./.github/actions/setup-build
 
-      - name: 生成临时自签名证书
+      - name: 还原固定签名密钥
+        env:
+          KEYSTORE_B64: ${{ secrets.ETA_KEYSTORE_BASE64 }}
         run: |
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/eta-custom.jks" \
-            -alias eta \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass eta-custom-pass -keypass eta-custom-pass \
-            -dname "CN=Eta Custom, OU=Self, O=Self, L=NA, ST=NA, C=CN"
+          if [[ -z "$KEYSTORE_B64" ]]; then
+            echo "::error::缺少仓库 Secret ETA_KEYSTORE_BASE64；固定签名需要它，否则每次构建签名都会变。"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/eta-custom.jks"
           ls -lh "$RUNNER_TEMP/eta-custom.jks"
+          keytool -list -keystore "$RUNNER_TEMP/eta-custom.jks" -storepass eta-custom-pass | head -4
 
       - name: 构建 Release
         env:
