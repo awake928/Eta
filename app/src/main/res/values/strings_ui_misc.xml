@@ -138,6 +138,10 @@
   <string name="stats_tool_time">Tool time</string>
   <string name="stats_avg_ttft">Avg. TTFT</string>
   <string name="stats_output_speed">Output speed (TPS)</string>
+  <string name="stats_balance_title">Account balance</string>
+  <string name="stats_balance_refresh_hint">Tap to refresh</string>
+  <string name="stats_balance_refreshing">Refreshing…</string>
+  <string name="stats_session_cost">Session cost</string>
   <string name="stats_token_usage">Token usage</string>
   <string name="stats_cache_hit">Cache hit</string>
   <string name="stats_cache_miss">Uncached</string>
