@@ -1,0 +1,85 @@
+name: 自建 Release APK（R8 瘦身 + 自签名）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: custom-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-release:
+    name: 构建 Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: 配置构建环境
+        uses: ./.github/actions/setup-build
+
+      - name: 生成临时自签名证书
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/eta-custom.jks" \
+            -alias eta \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass eta-custom-pass -keypass eta-custom-pass \
+            -dname "CN=Eta Custom, OU=Self, O=Self, L=NA, ST=NA, C=CN"
+          ls -lh "$RUNNER_TEMP/eta-custom.jks"
+
+      - name: 构建 Release（R8 + 资源裁剪）
+        env:
+          ETA_RELEASE_STORE_FILE: ${{ runner.temp }}/eta-custom.jks
+          ETA_RELEASE_STORE_PASSWORD: eta-custom-pass
+          ETA_RELEASE_KEY_ALIAS: eta
+          ETA_RELEASE_KEY_PASSWORD: eta-custom-pass
+        run: |
+          ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease
+
+      - name: 校验并整理 APK
+        id: apk
+        run: |
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/release/*.apk)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "::error::Release APK 数量异常（${#apks[@]}）。"
+            exit 1
+          fi
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          "$apksigner_path" verify --print-certs "${apks[0]}" | head -5
+          out="$RUNNER_TEMP/Eta-custom-release.apk"
+          cp "${apks[0]}" "$out"
+          ls -lh "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "$out" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: eta-release-apk
+          path: ${{ steps.apk.outputs.path }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 发布到 Release（免登录直链）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_PATH: ${{ steps.apk.outputs.path }}
+          APK_SIZE: ${{ steps.apk.outputs.size }}
+        run: |
+          tag="custom-release"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --title "自建 Release 构建" \
+                 --notes "自签名 Release APK（R8 混淆 + 资源裁剪，体积接近官方 release）。安装前需卸载官方 Eta，签名不同。"
+          gh release upload "$tag" "$APK_PATH" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "直链: https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/Eta-custom-release.apk"
