@@ -29,7 +29,6 @@ import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -58,9 +57,7 @@ import io.github.mangi.eta.data.provider.ProviderSourceRegistry
 import io.github.mangi.eta.data.repository.DeepSeekBalanceRepository
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
-import io.github.mangi.eta.data.repository.catalog.ModelPricing
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
-import io.github.mangi.eta.ui.model.SessionStatsSummaryUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
 import java.text.NumberFormat
 import java.util.Locale
@@ -261,8 +258,8 @@ internal fun ContextUsageStatsPopoverPopup(
 
     val body: @Composable ColumnScope.() -> Unit = {
         // 取数放在弹层内容内部：弹层未组合时不订阅 Flow，避免输入栏层被反复重组。
-        val balancePanel = rememberBalancePanel(usage)
-        // 账户余额：单行占位，右侧小字「点按刷新」；拿不到余额接口时整块不渲染。
+        val balancePanel = rememberBalancePanel()
+        // 账户余额：整行可点即刷新，平时不画「点按刷新」之类的小字；拿不到余额接口时整块不渲染。
         if (balancePanel.balanceText != null) {
             val refreshBalance = balancePanel.onRefresh
             val balanceModifier: Modifier = if (refreshBalance != null) {
@@ -275,7 +272,8 @@ internal fun ContextUsageStatsPopoverPopup(
             } else {
                 Modifier
             }
-            Box(modifier = Modifier.fillMaxWidth().then(balanceModifier)) {
+            // 热区扩到 30dp 左右：这一行本身就是刷新按钮，别让人点空。
+            Box(modifier = Modifier.fillMaxWidth().then(balanceModifier).padding(vertical = 6.dp)) {
                 StatsSectionHeader(
                     icon = ChatActionIcons.Wallet,
                     title = stringResource(R.string.stats_balance_title),
@@ -292,13 +290,6 @@ internal fun ContextUsageStatsPopoverPopup(
         )
         StatsSectionDivider()
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            // 本会话花费与 Token 明细同块：钱跟 token 放一起，只占一行。
-            if (balancePanel.costText != null) {
-                StatsDetailRow(
-                    label = stringResource(R.string.stats_session_cost),
-                    value = balancePanel.costText,
-                )
-            }
             if (usage.contextTokens != null && usage.contextWindow != null && usage.contextWindow > 0) {
                 StatsDetailRow(
                     label = stringResource(R.string.ui_contextual_usage_d12810),
@@ -520,41 +511,33 @@ internal fun ChatStatsPopoverPopup(
     }
 }
 
-/** 余额币种是人民币时，把 models.dev 的美元价目按固定汇率折成人民币，仅作花费估算。 */
-private const val UsdToCnyEstimateRate = 7.2
 private const val CnyCurrencyCode = "CNY"
-private const val BuiltinModelIdPrefix = "builtin-"
-private const val DeepSeekModelIdPrefix = "deepseek"
 
-/** 统计面板顶部账户区块的展示态：余额与花费都是可选行，取不到就不渲染。 */
+/** 统计面板顶部账户区块的展示态：余额拿不到时整个区块不渲染。 */
 private data class BalancePanelUi(
     val balanceText: String? = null,
     val balanceHint: String? = null,
-    val costText: String? = null,
     val onRefresh: (() -> Unit)? = null,
 )
 
 /**
- * 解析当前 provider 与模型，产出「账户余额 + 本会话花费」的展示态。
+ * 解析当前 provider，产出账户余额的展示态。
  *
- * 余额只在 DeepSeek 官方源（或跑 DeepSeek 模型的中转站）上出现；
- * 花费按 APK 内置 models.dev 目录价目估算；两者都拿不到时整个区块不渲染。
+ * 余额只在 DeepSeek 官方源（或跑 DeepSeek 模型的中转站）上出现；拿不到时整个区块不渲染。
+ * 这里刻意不做任何「会话花费估算」：目录价 × 硬编码汇率 × 内存窗口内的 token，
+ * 三项都会失真，估算值对不上账单；真实花费以余额（官方接口实时值）的减少量为准。
  */
 @Composable
-private fun rememberBalancePanel(usage: AgentContextUsageUi): BalancePanelUi {
-    val context = LocalContext.current
+private fun rememberBalancePanel(): BalancePanelUi {
     val initialProviders = remember { ProviderRepository.cachedProviders() }
-    // Flow 必须按实例固定：这三条底层都会新建 Flow，若在重组里现取现订阅，
+    // Flow 必须按实例固定：这两条底层都会新建 Flow，若在重组里现取现订阅，
     // 每次重组都会取消并重建 Room / DataStore 订阅，进而触发新一轮重组。
     val providersFlow = remember { ProviderRepository.providersFlow() }
     val selectedProviderFlow = remember { RuntimeConfigRepository.selectedProviderIdFlow() }
-    val selectedModelFlow = remember { RuntimeConfigRepository.selectedModelIdFlow() }
     val providers by providersFlow
         .collectAsStateWithLifecycle(initialValue = initialProviders)
     val selectedProviderId by selectedProviderFlow
         .collectAsStateWithLifecycle(initialValue = RuntimeConfigRepository.cachedSelectedProviderId())
-    val selectedModelId by selectedModelFlow
-        .collectAsStateWithLifecycle(initialValue = RuntimeConfigRepository.cachedSelectedModelId())
     val provider = remember(providers, selectedProviderId) {
         providers.firstOrNull { it.id == selectedProviderId }
             ?: initialProviders.firstOrNull { it.id == selectedProviderId }
@@ -562,16 +545,12 @@ private fun rememberBalancePanel(usage: AgentContextUsageUi): BalancePanelUi {
     val providerSourceType = remember(provider) {
         provider?.let { current -> ProviderSourceRegistry.resolve(current) }.orEmpty()
     }
-    // usage 里只有 contextWindow，拿不到模型 id，所以这里单独读选中的模型。
-    val modelKey = selectedModelId.orEmpty().trim().removePrefix(BuiltinModelIdPrefix)
     val isDeepSeekSource = providerSourceType == ProviderSourceTypes.DEEPSEEK
-    val isDeepSeekModel = modelKey.startsWith(DeepSeekModelIdPrefix)
     val showBalance = isDeepSeekSource && provider != null && provider.apiKey.isNotBlank()
 
     var balance by remember(provider?.id) {
         mutableStateOf<DeepSeekBalanceRepository.BalanceState>(DeepSeekBalanceRepository.BalanceState.Idle)
     }
-    var cost by remember(provider?.id, modelKey) { mutableStateOf<ModelPricing.ModelCost?>(null) }
     val scope = rememberCoroutineScope()
     val refreshing = balance is DeepSeekBalanceRepository.BalanceState.Loading
 
@@ -585,18 +564,8 @@ private fun rememberBalancePanel(usage: AgentContextUsageUi): BalancePanelUi {
         balance = DeepSeekBalanceRepository.BalanceState.Loading
         balance = DeepSeekBalanceRepository.fetch(current, force = false)
     }
-    LaunchedEffect(provider?.id, providerSourceType, modelKey) {
-        cost = if (modelKey.isEmpty()) null else ModelPricing.costFor(context, providerSourceType, modelKey)
-    }
 
-    if (!isDeepSeekSource && !isDeepSeekModel) return BalancePanelUi()
-
-    val currency = (balance as? DeepSeekBalanceRepository.BalanceState.Loaded)?.currency
-    val costText = cost?.let { modelCost ->
-        val usd = sessionCostUsd(modelCost, usage.sessionStats)
-        formatMoney(if (currency == CnyCurrencyCode) usd * UsdToCnyEstimateRate else usd, currency)
-    }
-    if (!showBalance && costText == null) return BalancePanelUi()
+    if (!isDeepSeekSource || !showBalance) return BalancePanelUi()
 
     val balanceText = when (val state = balance) {
         DeepSeekBalanceRepository.BalanceState.Idle -> null
@@ -604,11 +573,11 @@ private fun rememberBalancePanel(usage: AgentContextUsageUi): BalancePanelUi {
         is DeepSeekBalanceRepository.BalanceState.Loaded -> formatMoney(state.total, state.currency)
         DeepSeekBalanceRepository.BalanceState.Failed -> stringResource(R.string.stats_balance_failed)
     }
-    val hint = when {
-        balanceText == null -> null
-        refreshing -> stringResource(R.string.stats_balance_refreshing)
-        showBalance -> stringResource(R.string.stats_balance_refresh_hint)
-        else -> null
+    // 整行就是刷新按钮，只在真正取数时给一行进度提示，平时不写字。
+    val hint = if (balanceText != null && refreshing) {
+        stringResource(R.string.stats_balance_refreshing)
+    } else {
+        null
     }
     val refreshTarget = provider
     val onRefresh: (() -> Unit)? = if (refreshTarget != null && showBalance && !refreshing) {
@@ -624,19 +593,8 @@ private fun rememberBalancePanel(usage: AgentContextUsageUi): BalancePanelUi {
     return BalancePanelUi(
         balanceText = balanceText,
         balanceHint = hint,
-        costText = costText,
         onRefresh = onRefresh,
     )
-}
-
-/** 按 models.dev 的美元价目估算本会话花费；reasoning 已含在 outputTokens 内，不重复计费。 */
-private fun sessionCostUsd(cost: ModelPricing.ModelCost, stats: SessionStatsSummaryUi): Double {
-    val cacheWritePrice = cost.cacheWrite ?: cost.input
-    val totalUsd = stats.uncachedInputTokens * cost.input +
-        stats.cachedTokens * cost.cacheRead +
-        stats.cacheWriteTokens * cacheWritePrice +
-        stats.outputTokens * cost.output
-    return totalUsd / 1_000_000.0
 }
 
 /** 金额展示：CNY 用 ¥，其余按 $ 处理；不足 0.01 用 `<0.01` 形式，否则两位小数。 */
