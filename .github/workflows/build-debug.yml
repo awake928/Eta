@@ -32,6 +32,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: 恢复增量构建缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/build
+            app/.gradle
+            .gradle
+          key: eta-build-${{ runner.os }}-debug-${{ hashFiles('app/src/**', 'app/build.gradle.kts', 'build.gradle.kts', 'settings.gradle.kts', 'gradle/**') }}
+          restore-keys: |
+            eta-build-${{ runner.os }}-debug-
+
       - name: 配置构建环境
         uses: ./.github/actions/setup-build
 
@@ -39,11 +50,19 @@ jobs:
         env:
           META: ${{ inputs.build_metadata }}
         run: |
+          set -o pipefail
           metadata_arg=()
           if [[ -n "$META" ]]; then
             metadata_arg=("-Peta.buildMetadata=$META")
           fi
-          ./gradlew --no-daemon --no-configuration-cache "${metadata_arg[@]}" :app:assembleDebug
+          # 缓存里可能带着上一轮的 APK，留着会让「整理 APK」数出两个
+          rm -rf app/build/outputs
+          start=$(date +%s)
+          ./gradlew --no-daemon --no-configuration-cache --build-cache "${metadata_arg[@]}" :app:assembleDebug 2>&1 | tee "$RUNNER_TEMP/build-debug.log"
+          elapsed=$(( $(date +%s) - start ))
+          cached=$(grep -c 'FROM-CACHE' "$RUNNER_TEMP/build-debug.log" || true)
+          du -sh app/build app/.gradle 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo "debug 构建耗时 ${elapsed}s，FROM-CACHE ${cached} 个任务" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: 整理 APK
         id: apk
@@ -92,6 +111,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: 恢复增量构建缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/build
+            app/.gradle
+            .gradle
+          key: eta-build-${{ runner.os }}-release-${{ hashFiles('app/src/**', 'app/build.gradle.kts', 'build.gradle.kts', 'settings.gradle.kts', 'gradle/**') }}
+          restore-keys: |
+            eta-build-${{ runner.os }}-release-
+
       - name: 配置构建环境
         uses: ./.github/actions/setup-build
 
@@ -114,7 +144,15 @@ jobs:
           ETA_RELEASE_KEY_ALIAS: eta
           ETA_RELEASE_KEY_PASSWORD: eta-custom-pass
         run: |
-          ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease
+          set -o pipefail
+          # 缓存里可能带着上一轮的 APK，留着会让「校验并整理 APK」数出两个
+          rm -rf app/build/outputs
+          start=$(date +%s)
+          ./gradlew --no-daemon --no-configuration-cache --build-cache :app:assembleRelease 2>&1 | tee "$RUNNER_TEMP/build-release.log"
+          elapsed=$(( $(date +%s) - start ))
+          cached=$(grep -c 'FROM-CACHE' "$RUNNER_TEMP/build-release.log" || true)
+          du -sh app/build app/.gradle 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo "release 构建耗时 ${elapsed}s，FROM-CACHE ${cached} 个任务" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: 校验并整理 APK
         id: apk
